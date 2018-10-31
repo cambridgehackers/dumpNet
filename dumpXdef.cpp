@@ -29,10 +29,28 @@
 #include <unistd.h>
 #include <string>
 #include <map>
+#include <list>
 
 #define BUFFER_SIZE 16384000
 #define MAX_MESSAGE 40000
 #define STRING -2
+typedef struct {
+    const char *prefix;
+    int         length;
+    const char **map;
+} CacheIndex;
+std::map<int, std::string> tileMap;
+#include "cacheData.h"
+typedef struct {
+     int         valr;
+     std::map<int, std::string> cacheMap;
+} CacheType;
+std::map<std::string, CacheType> cache;
+std::map<std::string, std::list<std::string>> tilePin;
+std::map<std::string, int> name2SW;
+std::map<std::string, int> name2Tile;
+std::map<int, std::string> SW2site;
+
 struct {
     int val, tag;
     std::string str;
@@ -70,24 +88,74 @@ inline std::string autostr(uint64_t X, bool isNeg = false)
   return std::string(BufPtr, std::end(Buffer));
 }
 
+inline std::string autostrH(uint64_t X, bool isNeg = false)
+{
+  char Buffer[21];
+  char *BufPtr = std::end(Buffer);
+
+  if (X == 0) *--BufPtr = '0';  // Handle special case...
+
+  while (X) {
+    *--BufPtr = "0123456789abcdef"[X % 16];
+    X /= 16;
+  }
+
+  if (isNeg) *--BufPtr = '-';   // Add negative sign...
+  return std::string(BufPtr, std::end(Buffer));
+}
+
+bool inline endswith(std::string str, std::string suffix)
+{
+    int skipl = str.length() - suffix.length();
+    return skipl >= 0 && str.substr(skipl) == suffix;
+}
+
+bool inline startswith(std::string str, std::string suffix)
+{
+    return str.substr(0, suffix.length()) == suffix;
+}
+
 std::string translateName(const char *prefix, int index)
 {
     char buffer[1000];
-    static struct {
-        const char *key;
-        const char *val;
-    } lookupMap[] = {
-#include "cacheData.h"
-        { nullptr, nullptr } };
     int lookupIndex = 0;
 
     sprintf(buffer, "%s_%03x", prefix, index);
-    while (lookupMap[lookupIndex].key)
-        if (!strcmp(lookupMap[lookupIndex].key, buffer))
-            return lookupMap[lookupIndex].val;
-        else
+#ifdef HAS_CACHE_DATA
+    while (lookupMap[lookupIndex].prefix)
+        if (strcmp(lookupMap[lookupIndex].prefix, prefix))
             lookupIndex++;
+        else if (index && index <= lookupMap[lookupIndex].length)
+            return lookupMap[lookupIndex].map[index-1];
+        else
+            break;
+#endif
     return buffer;
+}
+
+std::string getPinName(std::string tile, int pin)
+{
+    int lookupIndex = 0;
+    const char *tileType = nullptr;
+    std::string ret = autostrH(pin);
+#ifdef HAS_CACHE_DATA
+    if (startswith(tile, "SLICE_"))
+        tileType = "CLBLM_R";
+    else if (startswith(tile, "INT_R_"))
+        tileType = "INT_R";
+    else if (startswith(tile, "INT_L_"))
+        tileType = "INT_L";
+    else if (startswith(tile, "PS7_"))
+        tileType = "PSS2";
+    else
+        return ret;
+    while (tilePinMap[lookupIndex].prefix) {
+        if (!strcmp(tileType, tilePinMap[lookupIndex].prefix) && pin < tilePinMap[lookupIndex].length)
+            return tilePinMap[lookupIndex].map[pin];
+        lookupIndex++;
+    }
+#endif
+    return ret;
 }
 
 void memdump(const unsigned char *p, int len, const char *title)
@@ -319,6 +387,7 @@ void traceString(std::string str)
 }
 
 int deviceColumns = 0x1000000;
+std::string netNameSW;
 void readNodeList(bool &first)
 {
     int count = readInteger();
@@ -333,6 +402,7 @@ void readNodeList(bool &first)
         first = false;
     }
     int nodeWrap = 5;
+    std::string previousTile;
     for (int i = 0; i < count; i++) {
         int tile = readInteger();
         int sitePin = readInteger();
@@ -342,14 +412,33 @@ void readNodeList(bool &first)
         //int column = tile % deviceColumns;
         int t1 = (tile >> 29) & 1;
         int t2 = (tile >> 28) & 1;
-        tile &= 0x3fffff;
-        printf("[tile %03x %x:%x] ", tile, sitePin >> 16, sitePin & 0xffff);
+        //tile &= 0x3fffff;
+        tile &= 0xffffff;
+        if (netNameSW != "") {
+            name2Tile[netNameSW] = tile;
+            netNameSW = "";
+        }
+        std::string tname = tileMap[tile];
+        if (tname == "" || startswith(tname, "tile_")) {
+            tname = "tile_";
+            if (startswith(previousTile, "SLICE_"))
+                tname = "INT_R_";
+            else if (startswith(previousTile, "INT_R_"))
+                tname = "INT_L_";
+            tname += autostrH(tile);
+            tileMap[tile] = tname;
+        }
+        printf("[%s/%s", tname.c_str(), getPinName(tname, sitePin>>16).c_str());
+        if ((sitePin & 0xffff) != 0xffff)
+            printf(":%x", sitePin & 0xffff);
+        printf("] ");
         checkId(t1, 0);
         checkId(t2, 0);
         if (--nodeWrap == 0) {
             printf("\n        ");
             nodeWrap = 5;
         }
+        previousTile = tname;
     }
 }
 
@@ -408,6 +497,8 @@ void belStart(int elementNumber)
     }
 }
 
+std::map<std::string, int> siteNumber;
+std::map<std::string, int> site2tile;
 void dumpXdef(void)
 {
 //jca
@@ -482,7 +573,8 @@ int lastSiteId = 0;
         checkId(messageData[0].val, 0xdead4444); // loop for BEL
         mlen = readMessage();
         int belCount = messageData[0].val;
-        printf("sitetype %s id %x diff %x", siteTypeName.c_str(), siteTypeId, siteTypeId - lastSiteId);
+        printf("sitetype %s id %x", siteTypeName.c_str(), siteTypeId);
+        siteNumber[siteTypeName] = siteTypeId;
         int ind = siteTypeName.find("_X");
         if (ind > 0) {
             std::string temp = siteTypeName.substr(ind+2);
@@ -491,6 +583,18 @@ int lastSiteId = 0;
             if (ind > 0) {
                 int yoff = atoi(temp.substr(ind+1).c_str());
                 offsetMap[xoff][yoff] = siteTypeId;
+xoff &= -2;
+                int tile = (102 - yoff) * 128 + (xoff + 33);
+switch(xoff) {
+case 0: tile += 1; break;
+case 4: tile += 1; break;
+case 6: tile += 5; break;
+case 8: tile += 4; break;
+}
+                printf(" tile %x", tile);
+                site2tile[siteTypeName] = tile;
+                if (tile > 0)
+                   tileMap[tile] = siteTypeName;
             }
         }
         lastSiteId = siteTypeId;
@@ -646,7 +750,12 @@ int lastSiteId = 0;
                     for (int connIndex = 0; connIndex < connCount; connIndex++) {
                         mlen = readMessage();
                         checkId(mlen, 1);
-                        printf("%sSW_%03x", sep2, messageData[0].val);
+                        int val0 = messageData[0].val;
+                        printf("%sSW_%03x", sep2, val0);
+                        if (SW2site[val0] == "")
+                            SW2site[val0] = siteTypeName;
+                        else if (SW2site[val0] != siteTypeName)
+                            SW2site[val0] = "NONE";
                         sep2 = ", ";
                     }
                     printf("}");
@@ -708,19 +817,22 @@ int lastSiteId = 0;
     checkId(readInteger(), 3); // routing version
     int tileCount = readInteger();
     for (int tileIndex = 0; tileIndex < tileCount; tileIndex++) {
-        std::string gname = readString();
-        printf("tiletype %s [%x]: \n        ", gname.c_str(), tileIndex);
+        std::string tileTypeName = readString();
+        //printf("tiletype %s [%x]: \n        ", tileTypeName.c_str(), tileIndex);
         int listCount = readInteger();
-        int tileWrap = 3;
+        //int tileWrap = 3;
         for (int listIndex = 0; listIndex < listCount; listIndex++) {
             std::string name = readString();
+            tilePin[tileTypeName].push_back(name);
+#if 0
             printf("%s ", name.c_str());
             if (--tileWrap == 0) {
                 printf("\n        ");
                 tileWrap = 3;
             }
+#endif
         }
-        printf("\n");
+        //printf("\n");
     }
     checkStr(readString(), "END_HEADER");
     bool first = true;
@@ -732,6 +844,7 @@ int lastSiteId = 0;
         std::string temp = readString();
         int desId = readInteger();
         printf("NET_%x %s: ", desId, temp.c_str());
+        netNameSW = temp;
         if (first) {
             int extra = readInteger();
             checkId(extra, 0);
@@ -786,7 +899,17 @@ int lastSiteId = 0;
     for (int lind = 0; lind < lval; lind++) {
         mlen = readMessage();
         checkId(mlen, 3);
-        printf("Site2Net %s SW_%03x NET_%x\n", messageData[0].str.c_str(), messageData[1].val, messageData[2].val);
+        std::string val0 = messageData[0].str;
+        int val1 = messageData[1].val;
+        int val2 = messageData[2].val;
+        printf("Site2Net %s SW_%03x NET_%x\n", val0.c_str(), val1, val2);
+        name2SW[val0] = val1;
+        int temp = name2Tile[val0];
+        if (temp) {
+            std::string sw = SW2site[val1];
+            if (sw != "NONE")
+                tileMap[temp] = sw;
+        }
     };
     mlen = readMessage();
     checkId(mlen, 1);
@@ -797,7 +920,7 @@ int lastSiteId = 0;
     for (int sind = 0; sind < sval; sind++) {
         mlen = readMessage();
         checkId(mlen, 3);
-        printf("SVAL %s BEL_%03x %x\n", messageData[0].str.c_str(), messageData[1].val, messageData[2].val);
+        printf("LOCK_PINS %s BEL_%03x %x\n", messageData[0].str.c_str(), messageData[1].val, messageData[2].val);
     };
     printf("Parse device cache\n");
     mlen = readMessage();
@@ -805,11 +928,6 @@ int lastSiteId = 0;
     checkId(messageData[0].val, 0xdead1111);
     checkStr(messageData[1].str, deviceCacheHeader);
     checkId(messageData[2].val, 1);
-    typedef struct {
-         int         val;
-         std::map<int, std::string> cacheMap;
-    } CacheType;
-    std::map<std::string, CacheType> cache;
     std::string sectionIndex;
     do {
         mlen = readMessage();
@@ -819,7 +937,7 @@ int lastSiteId = 0;
             for (auto ch: name)
                 if (islower(ch)) {
                     sectionIndex = name;
-                    cache[sectionIndex].val = val;
+                    cache[sectionIndex].valr = val;
                     goto next;
                 }
             if (cache[sectionIndex].cacheMap.find(val) != cache[sectionIndex].cacheMap.end()) {
@@ -829,13 +947,56 @@ int lastSiteId = 0;
             else
                 cache[sectionIndex].cacheMap[val] = name;
         }
+        else {
+printf("[%s:%d] mlen %d\n", __FUNCTION__, __LINE__, mlen);
+            for (int i = 0; i < mlen; i++)
+printf("[%s:%d] [%d] %x\n", __FUNCTION__, __LINE__, i, messageData[i].val);
+        }
 next:;
     } while(mlen == 2);
     FILE *fcache;
     fcache = fopen("cacheData.h", "w");
+    fprintf(fcache, "#define HAS_CACHE_DATA\n");
+    for (auto citem: cache) {
+        fprintf(fcache, "const char *lookupMap_%s[] = {\n", citem.first.c_str());
+        for (auto item: citem.second.cacheMap)
+            fprintf(fcache, "    \"%s\",\n", item.second.c_str());
+        fprintf(fcache, "};\n");
+    }
+    fprintf(fcache, "CacheIndex lookupMap[] = {\n");
     for (auto citem: cache)
-    for (auto item: citem.second.cacheMap)
-        fprintf(fcache, "    {\"%s_%03x\", \"%s\"},\n", citem.first.c_str(), item.first, item.second.c_str());
+        fprintf(fcache, "    { \"%s\", %ld, lookupMap_%s},\n", citem.first.c_str(), citem.second.cacheMap.size(), citem.first.c_str());
+    fprintf(fcache, "    { nullptr, -1, nullptr} };\n");
+
+    for (auto citem: tilePin) {
+        fprintf(fcache, "const char *lookupMap_%s[] = {\n", citem.first.c_str());
+        int offset = 0;
+        for (auto item: citem.second) {
+            fprintf(fcache, "    \"%s\",    // %s:%x\n", item.c_str(), citem.first.c_str(), offset);
+            offset++;
+        }
+        fprintf(fcache, "};\n");
+    }
+    fprintf(fcache, "CacheIndex tilePinMap[] = {\n");
+    for (auto citem: tilePin)
+        fprintf(fcache, "    { \"%s\", %ld, lookupMap_%s},\n", citem.first.c_str(), citem.second.size(), citem.first.c_str());
+    fprintf(fcache, "    { nullptr, -1, nullptr} };\n");
+
+    fprintf(fcache, "void initTileMap()\n{\n");
+    for (auto citem: tileMap) {
+        fprintf(fcache, "tileMap[0x%x] = \"%s\";", citem.first, citem.second.c_str());
+        if (int num = siteNumber[citem.second]) {
+            fprintf(fcache, "      // %5x, %3d : %3d", num, (citem.first % 128) - 33, 102 - (citem.first / 128));
+            if (int diff = citem.first - site2tile[citem.second])
+                fprintf(fcache, "; %x", diff);
+        }
+        fprintf(fcache, "\n");
+    }
+    fprintf(fcache, "}\n");
+    //for (auto item: name2SW)
+        //printf("name2SW[%s] = %d\n", item.first.c_str(), item.second);
+    //for (auto item: SW2site)
+        //printf("SW2site[%d] = %s\n", item.first, item.second.c_str());
     fclose(fcache);
 #if 0
     for (auto xitem: offsetMap) {
@@ -985,6 +1146,9 @@ int main(int argc, char *argv[])
     const char *filename = "xx.xdef";
     int bflag, ch;
 
+#ifdef HAS_CACHE_DATA
+    initTileMap();
+#endif
     stripPrefix = getenv("STRIP_PREFIX");
     bflag = 0;
     while ((ch = getopt(argc, argv, "bf:")) != -1) {
