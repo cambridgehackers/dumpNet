@@ -38,15 +38,14 @@ typedef struct {
     int siteY;
 } SiteInfo;
 typedef struct {
-    std::map<std::string, int> tiles;
-    std::list<SiteInfo> sites;
+    std::map<std::string, std::list<SiteInfo>> tiles;
 } LocInfo;
 #define BUFFER_SIZE 16384000
 uint8_t inbuf[BUFFER_SIZE];
 uint8_t *bufp = inbuf;
 
 std::map<std::string, LocInfo> locData;
-std::map<std::string, std::list<std::string>> abstractTile;
+std::map<std::string, std::map<std::string, int>> abstractTile;
 typedef std::__list_iterator<SiteInfo, void *> SiteIterator;
 
 inline std::string autostr(uint64_t X, bool isNeg = false)
@@ -160,6 +159,14 @@ static MatchPattern tss[] = {
     { "GBR",  "2", {{"TIEOFF", 2, 0}, {"RAMB18", ABSOLUTE+2, SETY}, {"RAMB18", ABSOLUTE+2, YPLUS1}, {"RAMB36", ABSOLUTE+2, YDIV2}}},
     {nullptr}};
 
+SiteInfo *getChild(std::list<SiteInfo> &children, int ind)
+{
+    for (auto CI = children.begin(), CE = children.end(); CI != CE; CI++)
+        if (ind-- == 0)
+            return &*CI;
+    return nullptr;
+}
+
 void organizeNames()
 {
 int jca = 0;
@@ -187,13 +194,87 @@ int jca = 0;
             if (ind > 0) {
                 std::string loc = item.substr(ind+1);
                 item = item.substr(0, ind + 1);
-                locData[loc].tiles[item] = 1;
-                locData[loc].sites.push_back(SiteInfo{site, siteX, siteY});
+                locData[loc].tiles[item].push_back(SiteInfo{site, siteX, siteY});
             }
             start = bufp + 1;
         }
         bufp++;
     }
+    for (auto item = locData.begin(), itemE = locData.end(); item != itemE; item++) {
+        std::string lname = item->first;
+        int baseX = atoi(lname.substr(1).c_str());
+        int baseY = atoi(lname.substr(lname.find("Y")+1).c_str());
+        char btemp[100];
+        sprintf(btemp, "%04d:%04d", baseX, baseY);
+        std::string lsort = btemp;
+        //printf(" %s baseX %d baseY %d\n", lname.c_str(), baseX, baseY);
+        for (auto citem = item->second.tiles.begin(), CE = item->second.tiles.end(); citem != CE; ) {
+            std::string tname = citem->first;
+            int psize = citem->second.size();
+            SiteInfo *c0 = getChild(citem->second, 0);
+            SiteInfo *c1 = getChild(citem->second, 1);
+            SiteInfo *c2 = getChild(citem->second, 2);
+            SiteInfo *c3 = getChild(citem->second, 3);
+            SiteInfo *c4 = getChild(citem->second, 4);
+            SiteInfo *c5 = getChild(citem->second, 5);
+            if ((tname == "INT_L_" || tname == "INT_R_") && psize == 1 && c0->root == "TIEOFF") {
+                goto nextTile;
+            }
+            if ((tname == "CLBLL_R_" || tname == "CLBLL_L_" || tname == "CLBLM_R_" || tname == "CLBLM_L_")
+             && psize == 2 && c0->root == "SLICE" && c1->root == "SLICE"
+             && c0->siteY == c1->siteY && c0->siteY == baseY) {
+                if (endswith(tname, "_R_") && (c0->siteX & 1) == 0 && c1->siteX == c0->siteX + 1 && (baseX & 1) == 1)
+                    goto addItem;
+                if (endswith(tname, "_L_") && (c1->siteX & 1) == 0 && c0->siteX == c1->siteX + 1 && (baseX & 1) == 0)
+                    goto addItem;
+            }
+            if (tname == "CMT_FIFO_L_" && psize == 2
+                 && c0->root == "OUT_FIFO" && c1->root == "IN_FIFO") {
+                goto nextTile;
+            }
+            if (tname == "BRAM_L_" && psize == 3
+                 && c0->root == "RAMB36" && c1->root == "RAMB18" && c2->root == "RAMB18") {
+                goto nextTile;
+            }
+            if (tname == "BRAM_R_" && psize == 3
+                 && c0->root == "RAMB18" && c1->root == "RAMB18" && c2->root == "RAMB36") {
+                goto nextTile;
+            }
+            if ((tname == "DSP_R_" || tname == "DSP_L_") && psize == 3
+                 && c0->root == "DSP48" && c1->root == "DSP48" && c2->root == "TIEOFF") {
+                goto nextTile;
+            }
+            if (tname == "RIOB33_" && psize == 2
+                 && c0->root == "IOB" && c1->root == "IOB") {
+                goto nextTile;
+            }
+            if (tname == "RIOB33_SING_" && psize == 1 && c0->root == "IOB") {
+                goto nextTile;
+            }
+            if (tname == "RIOI3_SING_" && psize == 3
+                 && c0->root == "OLOGIC" && c1->root == "ILOGIC" && c2->root == "IDELAY") {
+                goto nextTile;
+            }
+            if ((tname == "RIOI3_" || tname == "RIOI3_TBYTETERM_" || tname == "RIOI3_TBYTESRC_")
+                 && psize == 6
+                 && c0->root == "OLOGIC" && c1->root == "ILOGIC"
+                 && c2->root == "OLOGIC" && c3->root == "ILOGIC"
+                 && c4->root == "IDELAY" && c5->root == "IDELAY") {
+                goto nextTile;
+            }
+
+            //for (auto sitem: citem->second) {
+                //printf(" %s_X%dY%d", sitem.root.c_str(), sitem.siteX, sitem.siteY);
+            //}
+            citem++;
+            continue;
+addItem:;
+            abstractTile[tname][lsort] = 1;
+nextTile:;
+            citem = item->second.tiles.erase(citem);
+        }
+    }
+#if 0
     for (auto item: locData) {
         int index = 0;
         while (groups[index].name) {
@@ -274,30 +355,48 @@ nextm:
             locData[item.first].tiles.clear();
             if (matchPattern(tss))
                 abstractTile[name + newName].push_back(item.first);
-            else
-                locData[item.first].tiles[groups[index].name] = 1;
+            //else
+                //locData[item.first].tiles[groups[index].name] = 1;
             break;
 next2:;
             index++;
         }
     }
+#endif
     for (auto item: locData) {
-        if (!item.second.tiles.size())
+        if (item.second.tiles.size() == 0)
             continue;
         printf("%s:", item.first.c_str());
-        for (auto citem: item.second.tiles)
+        for (auto citem: item.second.tiles) {
             printf(" %s", citem.first.c_str());
-        if (item.second.sites.size()) {
-            printf(" @:");
-            for (auto citem: item.second.sites)
+            if (citem.second.size())
+                printf("{");
+            for (auto citem: citem.second)
                 printf(" %s_X%dY%d", citem.root.c_str(), citem.siteX, citem.siteY);
+            if (citem.second.size())
+                printf("}, ");
         }
         printf("\n");
     }
     for (auto item: abstractTile) {
         printf("%s:", item.first.c_str());
-        for (auto citem: item.second)
-            printf(" %s", citem.c_str());
+        bool inRun = false;
+        int lastX = -1, lastY = -1, startY = -1;
+        for (auto citem: item.second) {
+            int offX = atoi(citem.first.c_str());
+            int offY = atoi(citem.first.substr(citem.first.find(":")+1).c_str());
+            if (!inRun || lastX != offX || offY != lastY + 1) {
+                if (inRun && lastY != startY)
+                    printf("-%d", lastY);
+                printf(" X%dY%d", offX, offY);
+                startY = offY;
+                inRun = true;
+            }
+            lastY = offY;
+            lastX = offX;
+        }
+        if (inRun)
+            printf("-%d", lastY);
         printf("\n");
     }
 }
