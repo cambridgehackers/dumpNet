@@ -583,14 +583,8 @@ int lastSiteId = 0;
             if (ind > 0) {
                 int yoff = atoi(temp.substr(ind+1).c_str());
                 offsetMap[xoff][yoff] = siteTypeId;
-xoff &= -2;
+xoff = (xoff | 1) + (xoff & 2) != 0;
                 int tile = (102 - yoff) * 128 + (xoff + 33);
-switch(xoff) {
-case 0: tile += 1; break;
-case 4: tile += 1; break;
-case 6: tile += 5; break;
-case 8: tile += 4; break;
-}
                 printf(" tile %x", tile);
                 site2tile[siteTypeName] = tile;
                 if (tile > 0)
