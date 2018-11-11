@@ -39,7 +39,13 @@ typedef struct {
     int         length;
     const char **map;
 } CacheIndex;
-std::map<int, std::string> tileMap;
+std::map<std::string, std::string> site2Tile;
+std::map<int, std::string> coord2Tile;
+void initCoord()
+{
+// foreach tile [tiles get] { foreach site [get_sites -quiet -of $tile] { puts "[get_property ROW $tile]  [get_property COLUMN $tile] [get_property NAME $tile] [get_property TYPE $tile]; [get_property TILE_X $tile ][get_property TILE_Y $tile]: [get_property NAME $site] [get_property -quiet SITE_TYPE $site]" } }
+#include "coordinate.h"
+}
 #include "cacheData.h"
 typedef struct {
      int         valr;
@@ -47,9 +53,6 @@ typedef struct {
 } CacheType;
 std::map<std::string, CacheType> cache;
 std::map<std::string, std::list<std::string>> tilePin;
-std::map<std::string, int> name2SW;
-std::map<std::string, int> name2Tile;
-std::map<int, std::string> SW2site;
 
 struct {
     int val, tag;
@@ -136,21 +139,12 @@ std::string translateName(const char *prefix, int index)
 std::string getPinName(std::string tile, int pin)
 {
     int lookupIndex = 0;
-    const char *tileType = nullptr;
     std::string ret = autostrH(pin);
+    int ind = tile.find("_X");
+    tile = tile.substr(0, ind);
 #ifdef HAS_CACHE_DATA
-    if (startswith(tile, "SLICE_"))
-        tileType = "CLBLM_R";
-    else if (startswith(tile, "INT_R_"))
-        tileType = "INT_R";
-    else if (startswith(tile, "INT_L_"))
-        tileType = "INT_L";
-    else if (startswith(tile, "PS7_"))
-        tileType = "PSS2";
-    else
-        return ret;
     while (tilePinMap[lookupIndex].prefix) {
-        if (!strcmp(tileType, tilePinMap[lookupIndex].prefix) && pin < tilePinMap[lookupIndex].length)
+        if (tile == tilePinMap[lookupIndex].prefix && pin < tilePinMap[lookupIndex].length)
             return tilePinMap[lookupIndex].map[pin];
         lookupIndex++;
     }
@@ -386,8 +380,6 @@ void traceString(std::string str)
     }
 }
 
-int deviceColumns = 0x1000000;
-std::string netNameSW;
 void readNodeList(bool &first)
 {
     int count = readInteger();
@@ -401,44 +393,29 @@ void readNodeList(bool &first)
         checkId(extra, 0);
         first = false;
     }
-    int nodeWrap = 5;
-    std::string previousTile;
     for (int i = 0; i < count; i++) {
         int tile = readInteger();
         int sitePin = readInteger();
-        //int pinType = (sitePin >> 16) & 0xffff;
-        //sitePin &= 0xffff;
-        //int row = tile/deviceColumns;
-        //int column = tile % deviceColumns;
+        int elementPin = sitePin>>16;
+        sitePin &= 0xffff;
+
         int t1 = (tile >> 29) & 1;
         int t2 = (tile >> 28) & 1;
         //tile &= 0x3fffff;
         tile &= 0xffffff;
-        if (netNameSW != "") {
-            name2Tile[netNameSW] = tile;
-            netNameSW = "";
-        }
-        std::string tname = tileMap[tile];
-        if (tname == "" || startswith(tname, "tile_")) {
-            tname = "tile_";
-            if (startswith(previousTile, "SLICE_"))
-                tname = "INT_R_";
-            else if (startswith(previousTile, "INT_R_"))
-                tname = "INT_L_";
-            tname += autostrH(tile);
-            tileMap[tile] = tname;
-        }
-        printf("[%s/%s", tname.c_str(), getPinName(tname, sitePin>>16).c_str());
-        if ((sitePin & 0xffff) != 0xffff)
-            printf(":%x", sitePin & 0xffff);
-        printf("] ");
+        std::string tname = coord2Tile[tile];
+        if (tname == "")
+            tname = "tile_" + autostrH(tile);
+        printf(" ");
+        if (t1)
+            printf("T1:");
+        if (t2)
+            printf("T2:");
+        printf("%s/%s", tname.c_str(), getPinName(tname, elementPin).c_str());
+        if (sitePin != 0xffff)
+            printf(":%x", sitePin);
         checkId(t1, 0);
         checkId(t2, 0);
-        if (--nodeWrap == 0) {
-            printf("\n        ");
-            nodeWrap = 5;
-        }
-        previousTile = tname;
     }
 }
 
@@ -497,11 +474,12 @@ void belStart(int elementNumber)
     }
 }
 
-std::map<std::string, int> siteNumber;
 std::map<std::string, int> site2tile;
+
 void dumpXdef(void)
 {
 //jca
+initCoord();
     printf("Parse header\n");
     checkStr(std::string(bufp, bufp + strlen(header)), header);
     bufp += strlen(header);
@@ -553,8 +531,6 @@ printf("[%s:%d] head5 %d device '%s' package '%s' limit %d str1 '%s': %x %x\n", 
     printf("Parse QDesign\n");
     mlen = readMessage();
     int sitetypeLen = messageData[0].val;
-    std::map<int, std::map<int, int>> offsetMap;
-int lastSiteId = 0;
     for (int sitetypeIndex = 0; sitetypeIndex < sitetypeLen; sitetypeIndex++) {
         mlen = readMessage();
         checkId(messageData[0].val, 0xdead3333);
@@ -574,26 +550,9 @@ int lastSiteId = 0;
         mlen = readMessage();
         int belCount = messageData[0].val;
         printf("sitetype %s id %x", siteTypeName.c_str(), siteTypeId);
-        siteNumber[siteTypeName] = siteTypeId;
-        int ind = siteTypeName.find("_X");
-        if (ind > 0) {
-            std::string temp = siteTypeName.substr(ind+2);
-            int xoff = atoi(temp.c_str());
-            ind = temp.find("Y");
-            if (ind > 0) {
-                int yoff = atoi(temp.substr(ind+1).c_str());
-                offsetMap[xoff][yoff] = siteTypeId;
-xoff = (xoff | 1) + (xoff & 2) != 0;
-                int tile = (102 - yoff) * 128 + (xoff + 33);
-                printf(" tile %x", tile);
-                site2tile[siteTypeName] = tile;
-                if (tile > 0)
-                   tileMap[tile] = siteTypeName;
-            }
-        }
-        lastSiteId = siteTypeId;
-        printf(" %s", translateName("SiteType", sitetypeInfo).c_str());
-        printf(" piptype %x\n", pipType ? pipType : IOpipType);
+        //setTileMap(siteTypeName, siteTypeId);
+        printf(" tile %s", site2Tile[siteTypeName].c_str());
+        printf(" %s\n", translateName("SiteType", sitetypeInfo).c_str());
         for (int belIndex = 0; belIndex < belCount; belIndex++) {
             mlen = readMessage();
             checkId(mlen, 1);
@@ -638,12 +597,11 @@ xoff = (xoff | 1) + (xoff & 2) != 0;
                 int pinWrap = 4;
                 for (int nameIndex = 0; nameIndex < nameCount; nameIndex++) {
                     mlen = readMessage();
-                    //int pinId = messageData[0].val;
+                    int pinId = messageData[0].val;
                     checkId(mlen, 1);
                     mlen = readMessage();
                     checkId(mlen, 1);
                     if (int pinCount = messageData[0].val) {
-                    bool putPinId = false;
                     printf("%s", sep);
                     for (int pinIndex = 0; pinIndex < pinCount; pinIndex++) {
                         readMessage(); // pin info
@@ -660,10 +618,8 @@ xoff = (xoff | 1) + (xoff & 2) != 0;
                                 printf("%x ", val1);
                             printf("%x] ", val3);
                         }
-                        //if (!putPinId)
-                            //printf("%x ", pinId);
-                        putPinId = true;
                         printf("%s", messageData[2].str.c_str());
+                        printf(":%s", translateName("ElementPin", pinId).c_str());
                         hasData = true;
                         save1 = val1;
                         save3 = val3;
@@ -690,6 +646,7 @@ xoff = (xoff | 1) + (xoff & 2) != 0;
         mlen = readMessage();
         int thisPip = messageData[0].val;
         checkId(mlen, 1);
+        assert(thisPip == pipType ? pipType : IOpipType);
         mlen = readMessage();
         checkId(mlen, 1);
         checkId(messageData[0].val, 0xdead7777); // PIP
@@ -698,18 +655,18 @@ xoff = (xoff | 1) + (xoff & 2) != 0;
         int pipCount = messageData[0].val;
         assert((!IOpipType && thisPip == pipType) || (!pipType && IOpipType == thisPip && !pipCount));
         if (pipCount) {
-        printf("    PIP_%x ", thisPip);
+        printf("    SITE_PIPS ");
         int pipWrap = 7;
         const char *sep = "";
         for (int pipIndex = 0; pipIndex < pipCount; pipIndex++) {
             readMessage();
             checkId(messageDataIndex, 4);
-            int val1, val3, val;
-            val1 = messageData[0].val;
-            val = messageData[1].val;
-            val3 = messageData[3].val;
-            assert(val3 == 0 || val3 == 1);
-            if (!val3)
+            int pipElement, pipUsed, pipElementPin;
+            pipElement = messageData[0].val;
+            pipElementPin = messageData[1].val;
+            pipUsed = messageData[3].val;
+            assert(pipUsed == 0 || pipUsed == 1);
+            if (!pipUsed)
                 continue; // unused
             checkId(messageData[2].val, 0x0f); // always "OUT"
             printf("%s", sep);
@@ -717,8 +674,8 @@ xoff = (xoff | 1) + (xoff & 2) != 0;
                 printf("\n        ");
                 pipWrap = 7;
             }
-            printf("%s:%s", translateName("Element", val1).c_str(),
-                translateName("ElementPin", val).c_str());
+            printf("%s:%s", translateName("Element", pipElement).c_str(),
+                translateName("ElementPin", pipElementPin).c_str());
             sep = ", ";
         }
         printf("\n");
@@ -746,10 +703,6 @@ xoff = (xoff | 1) + (xoff & 2) != 0;
                         checkId(mlen, 1);
                         int val0 = messageData[0].val;
                         printf("%sSW_%03x", sep2, val0);
-                        if (SW2site[val0] == "")
-                            SW2site[val0] = siteTypeName;
-                        else if (SW2site[val0] != siteTypeName)
-                            SW2site[val0] = "NONE";
                         sep2 = ", ";
                     }
                     printf("}");
@@ -812,21 +765,11 @@ xoff = (xoff | 1) + (xoff & 2) != 0;
     int tileCount = readInteger();
     for (int tileIndex = 0; tileIndex < tileCount; tileIndex++) {
         std::string tileTypeName = readString();
-        //printf("tiletype %s [%x]: \n        ", tileTypeName.c_str(), tileIndex);
         int listCount = readInteger();
-        //int tileWrap = 3;
         for (int listIndex = 0; listIndex < listCount; listIndex++) {
             std::string name = readString();
             tilePin[tileTypeName].push_back(name);
-#if 0
-            printf("%s ", name.c_str());
-            if (--tileWrap == 0) {
-                printf("\n        ");
-                tileWrap = 3;
-            }
-#endif
         }
-        //printf("\n");
     }
     checkStr(readString(), "END_HEADER");
     bool first = true;
@@ -834,11 +777,12 @@ xoff = (xoff | 1) + (xoff & 2) != 0;
     int vv2 = readInteger();
     int vv3 = readInteger();
     printf("Read nets %d, %d, %d\n", nameCount, vv2, vv3);
+std::map<int, int> netExist;
     for (int nameIndex = 0; nameIndex < nameCount; nameIndex++) {
-        std::string temp = readString();
-        int desId = readInteger();
-        printf("NET_%x %s: ", desId, temp.c_str());
-        netNameSW = temp;
+        std::string netSignalName = readString();
+        int netId = readInteger();
+        printf("NET_%03x %s: ", netId, netSignalName.c_str());
+        netExist[netId] = 1;
         if (first) {
             int extra = readInteger();
             checkId(extra, 0);
@@ -874,7 +818,9 @@ xoff = (xoff | 1) + (xoff & 2) != 0;
         int val = readInteger();
         int val2 = readInteger();
         int groupCount = readInteger();
-        printf("global %s: %x, %x\n", netName.c_str(), val, val2);
+        printf("global %s\n", netName.c_str());
+        assert(val == netNumber + 1);
+        assert(val2 + 1 == groupCount);
         int fourth = readInteger();
         checkId(fourth, 0);
         for (int groupIndex = 0; groupIndex < groupCount; groupIndex++) {
@@ -893,17 +839,10 @@ xoff = (xoff | 1) + (xoff & 2) != 0;
     for (int lind = 0; lind < lval; lind++) {
         mlen = readMessage();
         checkId(mlen, 3);
-        std::string val0 = messageData[0].str;
+        std::string signalName = messageData[0].str;
         int val1 = messageData[1].val;
-        int val2 = messageData[2].val;
-        printf("Site2Net %s SW_%03x NET_%x\n", val0.c_str(), val1, val2);
-        name2SW[val0] = val1;
-        int temp = name2Tile[val0];
-        if (temp) {
-            std::string sw = SW2site[val1];
-            if (sw != "NONE")
-                tileMap[temp] = sw;
-        }
+        int netId = messageData[2].val;
+        printf("Site2Net %s SW_%03x %sNET_%03x\n", signalName.c_str(), val1, netExist[netId] ? "" : "*", netId);
     };
     mlen = readMessage();
     checkId(mlen, 1);
@@ -914,7 +853,8 @@ xoff = (xoff | 1) + (xoff & 2) != 0;
     for (int sind = 0; sind < sval; sind++) {
         mlen = readMessage();
         checkId(mlen, 3);
-        printf("LOCK_PINS %s BEL_%03x %x\n", messageData[0].str.c_str(), messageData[1].val, messageData[2].val);
+        // ordinal of signal = messageData[2].val;
+        printf("SignalSource %s BEL_%03x\n", messageData[0].str.c_str(), messageData[1].val);
     };
     printf("Parse device cache\n");
     mlen = readMessage();
@@ -975,39 +915,7 @@ next:;
     for (auto citem: tilePin)
         fprintf(fcache, "    { \"%s\", %ld, lookupMap_%s},\n", citem.first.c_str(), citem.second.size(), citem.first.c_str());
     fprintf(fcache, "    { nullptr, -1, nullptr} };\n");
-
-    fprintf(fcache, "void initTileMap()\n{\n");
-    for (auto citem: tileMap) {
-        fprintf(fcache, "tileMap[0x%x] = \"%s\";", citem.first, citem.second.c_str());
-        if (int num = siteNumber[citem.second]) {
-            fprintf(fcache, "      // %5x, %3d : %3d", num, (citem.first % 128) - 33, 102 - (citem.first / 128));
-            if (int diff = citem.first - site2tile[citem.second])
-                fprintf(fcache, "; %x", diff);
-        }
-        fprintf(fcache, "\n");
-    }
-    fprintf(fcache, "}\n");
-    //for (auto item: name2SW)
-        //printf("name2SW[%s] = %d\n", item.first.c_str(), item.second);
-    //for (auto item: SW2site)
-        //printf("SW2site[%d] = %s\n", item.first, item.second.c_str());
     fclose(fcache);
-#if 0
-    for (auto xitem: offsetMap) {
-        for (auto yitem: xitem.second) {
-            int x = xitem.first, y = yitem.first;
-            printf("[%s:%d] JJJ x %2d y %2d %5x", __FUNCTION__, __LINE__, x, y, offsetMap[x][y]);
-            if (offsetMap.find(x+1) != offsetMap.end()
-              && offsetMap[x+1].find(y) != offsetMap[x+1].end())
-                printf(" deltax %5x %d", offsetMap[x+1][y], offsetMap[x+1][y] - offsetMap[x][y]);
-            else
-                printf("                    ");
-            if (offsetMap[x].find(y+1) != offsetMap[x].end())
-                printf(" deltay %5x %d", offsetMap[x][y+1], offsetMap[x][y+1] - offsetMap[x][y]);
-            printf("\n");
-        }
-    }
-#endif
 }
 
 int readCMessage(void)
@@ -1140,9 +1048,6 @@ int main(int argc, char *argv[])
     const char *filename = "xx.xdef";
     int bflag, ch;
 
-#ifdef HAS_CACHE_DATA
-    initTileMap();
-#endif
     stripPrefix = getenv("STRIP_PREFIX");
     bflag = 0;
     while ((ch = getopt(argc, argv, "bf:")) != -1) {
