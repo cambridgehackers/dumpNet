@@ -380,6 +380,67 @@ void traceString(std::string str)
     }
 }
 
+static struct {
+    const char *prev;
+    const char *cur;
+} matchTemplate[] = {
+    {"LL_A", "LOGIC_OUTS12:0"}, {"LL_B", "LOGIC_OUTS13:0"}, {"LL_C", "LOGIC_OUTS14:0"}, {"LL_D", "LOGIC_OUTS15:0"},
+    {"LL_AMUX", "LOGIC_OUTS20:0"}, {"LL_BMUX", "LOGIC_OUTS21:0"}, {"LL_CMUX", "LOGIC_OUTS22:0"}, {"LL_DMUX", "LOGIC_OUTS23:0"},
+    {"LL_AQ", "LOGIC_OUTS4:0"}, {"LL_BQ", "LOGIC_OUTS5:0"}, {"LL_CQ", "LOGIC_OUTS6:0"}, {"LL_DQ", "LOGIC_OUTS7:0"},
+    {"L_A", "LOGIC_OUTS8:0"}, {"L_B", "LOGIC_OUTS9:0"}, {"L_D", "LOGIC_OUTS11:0"},
+    {"L_AMUX", "LOGIC_OUTS16:0"}, {"L_BMUX", "LOGIC_OUTS17:0"}, {"L_CMUX", "LOGIC_OUTS18:0"}, {"L_DMUX", "LOGIC_OUTS19:0"},
+    {"L_AQ", "LOGIC_OUTS0:0"}, {"L_BQ", "LOGIC_OUTS1:0"}, {"L_CQ", "LOGIC_OUTS2:0"}, {"L_DQ", "LOGIC_OUTS3:0"},
+    {"M_AQ", "LOGIC_OUTS4:0"}, {"M_BQ", "LOGIC_OUTS5:0"}, {"M_CQ", "LOGIC_OUTS6:0"}, {"M_DQ", "LOGIC_OUTS7:0"},
+    {"M_A", "LOGIC_OUTS12:0"}, {"M_B", "LOGIC_OUTS13:0"}, {"M_C", "LOGIC_OUTS14:0"},
+    {"M_AMUX", "LOGIC_OUTS20:0"}, {"M_BMUX", "LOGIC_OUTS21:0"}, {"M_CMUX", "LOGIC_OUTS22:0"}, {"M_DMUX", "LOGIC_OUTS23:0"},
+    {nullptr, nullptr}};
+static struct {
+    const char *prefix;
+    int deltaX;
+    int deltaY;
+} direction[] = {
+    {"EE2BEG", 2, 0}, {"EE4BEG", 4, 0},
+    {"EL1BEG0:c", 1, 0}, {"EL1BEG1:13", 1, 0}, {"EL1BEG2", 1, 0}, {"EL1BEG_N3", 1, -1},
+    {"ER1BEG1", 1, 0}, {"ER1BEG2", 1, 0}, {"ER1BEG3", 1, 0}, {"ER1BEG_S0", 1, 1},
+    //{"NE2BEG0", 1, 0},
+    {"NE2BEG1", 1, 1}, {"NE2BEG2:", 1, 1}, {"NE2BEG3", 1, 1},
+    {"NE6BEG", 2, 4},
+    //{"NL1BEG0", 0, 0},
+    {"NL1BEG1:", 0, 1}, {"NL1BEG2:", 0, 1}, {"NL1BEG3:c", 0, 1},
+    {"NN2BEG0:3", 0, 2}, {"NN2BEG0:7", 0, 2}, {"NN2BEG0:8", 0, 2}, {"NN2BEG0:e", 0, 2},
+    {"NN2BEG1:", 0, 2}, {"NN2BEG2:", 0, 2}, {"NN2BEG3:2", 0, 2},
+    {"NN6BEG0", 0, 5}, {"NN6BEG1", 0, 6}, {"NN6BEG2:6", 0, 6}, {"NN6BEG3", 0, 6},
+    {"NR1BEG0:", 0, 1}, {"NR1BEG1:", 0, 1}, {"NR1BEG2:", 0, 1},
+    {"NR1BEG3:2", 0, 1}, {"NR1BEG3:3", 0, 1},
+    //{"NW2BEG0", -1, 0},
+    {"NW2BEG1", -1, 1}, {"NW2BEG2", -1, 1}, {"NW2BEG3:e", -1, 1},
+    //{"NW6BEG0", -2, 3},
+    {"NW6BEG1", -2, 4}, {"NW6BEG2", -2, 4}, {"NW6BEG3", -2, 4},
+    {"SE2BEG0", 1, -1}, {"SE2BEG1", 1, -1}, {"SE2BEG3", 1, -1},
+    {"SE6BEG0:8", 2, -4}, {"SE6BEG1", 2, -4}, {"SE6BEG2:", 2, -4},
+    {"SL1BEG0:", 0, -1}, {"SL1BEG1:", 0, -1}, {"SL1BEG2:", 0, -1},
+    {"SL1BEG3:4", 0, -1}, {"SL1BEG3:8", 0, -1}, {"SL1BEG3:9", 0, -1}, {"SL1BEG3:e", 0, -1},
+    {"SR1BEG1:", 0, -1}, {"SR1BEG2:", 0, -1},
+    {"SR1BEG3:6", 0, -1}, {"SR1BEG3:a", 0, -1}, {"SR1BEG3:e", 0, -1},
+    {"SS2BEG0:", 0, -2}, {"SS2BEG1:", 0, -2}, {"SS2BEG2:", 0, -2},
+    {"SS2BEG3:2", 0, -2}, {"SS2BEG3:d", 0, -2},
+    {"SS6BEG0:", 0, -6},
+    {"SW6BEG0:8", 2, -4}, {"SW6BEG0:d", -2, -4}, {"SW6BEG2:f", 2, 2},
+    {"SL1BEG3", 0, -1},
+    //{"SR1BEG3", 0, 0},
+    {"SS6BEG1", 0, -6}, {"SS6BEG2", 0, -6}, {"SS6BEG3", 0, -6},
+    {"SW2BEG0", -1, -1}, {"SW2BEG1", -1, -1}, {"SW2BEG2", -1, -1},
+    //{"SW2BEG3", -1, -1},
+    {"SW6BEG1", -2, -4},
+    //{"SW6BEG3", -2, -3},
+    {"WW2BEG0:4", -2, 0},
+    {"WL1BEG0", -1, 0}, {"WL1BEG1", -1, 0}, {"WL1BEG2", -1, 0},
+    //{"WL1BEG_N3", -1, -1},
+    {"WR1BEG1", -1, 0}, {"WR1BEG2", -1, 0}, {"WR1BEG3", -1, 0},
+    //{"WR1BEG_S0", -1, 1},
+    {"WW2BEG", -2, 0},
+    {"WW4BEG0:", -4, -1}, {"WW4BEG2:", -4, 0}, {"WW4BEG1", -4, 0}, {"WW4BEG3", -4, 0},
+    {nullptr, 0, 0}};
 void readNodeList(bool &first)
 {
     int count = readInteger();
@@ -393,6 +454,7 @@ void readNodeList(bool &first)
         checkId(extra, 0);
         first = false;
     }
+    std::string previousTile, previousPin, forceTile;
     for (int i = 0; i < count; i++) {
         int tile = readInteger();
         int sitePin = readInteger();
@@ -401,21 +463,67 @@ void readNodeList(bool &first)
 
         int t1 = (tile >> 29) & 1;
         int t2 = (tile >> 28) & 1;
+        checkId(t1, 0);
+        checkId(t2, 0);
         //tile &= 0x3fffff;
         tile &= 0xffffff;
         std::string tname = coord2Tile[tile];
         if (tname == "")
             tname = "tile_" + autostrH(tile);
         printf(" ");
-        if (t1)
-            printf("T1:");
-        if (t2)
-            printf("T2:");
-        printf("%s/%s", tname.c_str(), getPinName(tname, elementPin).c_str());
+        if (forceTile != "") {
+            if (forceTile == tname)
+                previousTile = tname;
+            else if (tname == "INT_L" + forceTile.substr(5) || tname == "INT_R" + forceTile.substr(5)) {
+            }
+            else {
+printf("[%s:%d] prevTile %s cur %s force %s\n", __FUNCTION__, __LINE__, previousTile.c_str(), tname.c_str(), forceTile.c_str());
+exit(-1);
+            }
+        }
+        if (startswith(previousTile, "CLB") && tname == "INT" + previousTile.substr(5))
+            previousTile = tname;
+        if (previousTile != tname)
+            printf("%s/", tname.c_str());
+        std::string pname = getPinName(tname, elementPin);
         if (sitePin != 0xffff)
-            printf(":%x", sitePin);
-        checkId(t1, 0);
-        checkId(t2, 0);
+            pname += ":" + autostrH(sitePin);
+        if (startswith(pname, "CLBLL_") || startswith(pname, "CLBLM_"))
+            pname = pname.substr(6);
+        bool skip = false;
+        int matchIndex = 0;
+        // skip printing pins when they automatically follow from previous pin type
+        while(matchTemplate[matchIndex].prev) {
+            if (previousPin == matchTemplate[matchIndex].prev) {
+                if (pname == matchTemplate[matchIndex].cur)
+                    skip = true;
+                else {
+                    printf("[%s:%d] prev %s pname %s\n", __FUNCTION__, __LINE__, previousPin.c_str(), pname.c_str());
+                    exit(-1);
+                }
+            }
+            matchIndex++;
+        }
+        if (!skip)
+            printf("%s", pname.c_str());
+
+        previousPin = pname;
+        previousTile = tname;
+        forceTile = "";
+        matchIndex = 0;
+        // skip printing tiles when they automatically follow from previous pin type
+        while(direction[matchIndex].prefix) {
+            if (startswith(previousPin, direction[matchIndex].prefix)) {
+                int ind = previousTile.find("_X") + 2;
+                std::string temp = previousTile.substr(ind);
+                int offX = atoi(temp.c_str())  + direction[matchIndex].deltaX;
+                temp = temp.substr(temp.find("Y") + 1);
+                int offY = atoi(temp.c_str()) + direction[matchIndex].deltaY;
+                if (offX >= 0 && offY >= 0)
+                    forceTile = previousTile.substr(0, ind) + autostr(offX) + "Y" + autostr(offY);
+            }
+            matchIndex++;
+        }
     }
 }
 
