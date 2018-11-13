@@ -1,0 +1,4 @@
+#
+set -x
+set -e
+scp -C bdbm08.csail.mit.edu:z/bin/coord.temp .

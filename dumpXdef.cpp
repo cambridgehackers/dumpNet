@@ -39,13 +39,33 @@ typedef struct {
     int         length;
     const char **map;
 } CacheIndex;
+typedef struct {
+    int offY; // row
+    int offX; // column
+    const char *tile;
+} TileCoord;
+typedef struct {
+    const char *site;
+    const char *tile;
+} SiteTile;
 std::map<std::string, std::string> site2Tile;
 std::map<int, std::string> coord2Tile;
+#include "coord.temp"
 void initCoord()
 {
-// foreach tile [tiles get] { foreach site [get_sites -quiet -of $tile] { puts "[get_property ROW $tile]  [get_property COLUMN $tile] [get_property NAME $tile] [get_property TYPE $tile]; [get_property TILE_X $tile ][get_property TILE_Y $tile]: [get_property NAME $site] [get_property -quiet SITE_TYPE $site]" } }
-#include "coordinate.h"
+    int maxX = 0;
+    for (int i = 0; i < sizeof(tileCoord)/sizeof(tileCoord[0]); i++) {
+       int j = tileCoord[i].offX;
+       if (j > maxX)
+           maxX = j;
+    }
+    maxX++;
+    for (int i = 0; i < sizeof(tileCoord)/sizeof(tileCoord[0]); i++)
+       coord2Tile[tileCoord[i].offY * maxX + tileCoord[i].offX] = tileCoord[i].tile;
+    for (int i = 0; i < sizeof(siteTile)/sizeof(siteTile[0]); i++)
+       site2Tile[siteTile[i].site] = siteTile[i].tile;
 }
+
 #include "cacheData.h"
 typedef struct {
      int         valr;
