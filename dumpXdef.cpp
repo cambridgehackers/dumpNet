@@ -35,11 +35,6 @@
 #define MAX_MESSAGE 40000
 #define STRING -2
 typedef struct {
-    const char *prefix;
-    int         length;
-    const char **map;
-} CacheIndex;
-typedef struct {
     int offY; // row
     int offX; // column
     const char *tile;
@@ -48,9 +43,57 @@ typedef struct {
     const char *site;
     const char *tile;
 } SiteTile;
+#include "coord.temp"
+
+typedef struct {
+    const char *prefix;
+    int         length;
+    const char **map;
+} CacheIndex;
+typedef struct {
+    int belNumber;
+    const char *name;
+} PlaceInfo;
+typedef struct {
+    int sitePin;
+    int net;
+    int exist;
+    const char *name;
+} SiteNetMap;
+typedef struct {
+     const char *name;
+     int   mandatory;
+     int   sameA6LUT_O6;
+} SitePinInfo;
+typedef struct {
+     const char *name;
+     SitePinInfo *info;
+     int   size;
+} SitePinInfoMap;
+#include "cacheData.h"
+
+typedef struct {
+    int net;
+    std::string name;
+} SiteNetInfo;
+typedef struct {
+     int         valr;
+     std::map<int, std::string> cacheMap;
+} CacheType;
+typedef struct {
+     int   mandatory;
+     int   sameA6LUT_O6;
+} SitePinMandatory;
+
+std::map<int, SiteNetInfo> siteNet;
+std::map<int, int> netExist;
 std::map<std::string, std::string> site2Tile;
 std::map<int, std::string> coord2Tile;
-#include "coord.temp"
+std::map<int, std::string> placeName;
+std::map<std::string, std::list<std::string>> sitePinTemplate;
+std::map<std::string, std::map<std::string, int>> sitePinCount;
+std::map<std::string, std::map<std::string, SitePinMandatory>> sitePinMandatory;
+std::map<std::string, int> sitePinA6LUT_O6;
 void initCoord()
 {
     int maxX = 0;
@@ -64,13 +107,15 @@ void initCoord()
        coord2Tile[tileCoord[i].offY * maxX + tileCoord[i].offX] = tileCoord[i].tile;
     for (int i = 0; i < sizeof(siteTile)/sizeof(siteTile[0]); i++)
        site2Tile[siteTile[i].site] = siteTile[i].tile;
+#ifdef HAS_CACHE_DATA
+    for (int i = 0; i < sizeof(sitePinMap)/sizeof(sitePinMap[0]); i++)
+        for (int j = 0; j < sitePinMap[i].size; j++) {
+            sitePinMandatory[sitePinMap[i].name][sitePinMap[i].info[j].name].mandatory = sitePinMap[i].info[j].mandatory;
+            sitePinMandatory[sitePinMap[i].name][sitePinMap[i].info[j].name].sameA6LUT_O6 = sitePinMap[i].info[j].sameA6LUT_O6;
+            sitePinA6LUT_O6[sitePinMap[i].name] += sitePinMap[i].info[j].sameA6LUT_O6;
+        }
+#endif
 }
-
-#include "cacheData.h"
-typedef struct {
-     int         valr;
-     std::map<int, std::string> cacheMap;
-} CacheType;
 std::map<std::string, CacheType> cache;
 std::map<std::string, std::list<std::string>> tilePin;
 
@@ -153,6 +198,66 @@ std::string translateName(const char *prefix, int index)
         else
             break;
 #endif
+    return buffer;
+}
+
+std::string translatePlace(int index)
+{
+    char buffer[1000];
+    int lookupIndex = 0;
+
+    sprintf(buffer, "BEL_%03x", index);
+#ifdef HAS_CACHE_DATA
+    while (placeMap[lookupIndex].name)
+        if (placeMap[lookupIndex].belNumber != index)
+            lookupIndex++;
+        else
+            return placeMap[lookupIndex].name;
+#endif
+    return buffer;
+}
+
+void checkNetName(int netId, std::string name)
+{
+    int lookupIndex = 0;
+
+    netExist[netId] = 1;
+#ifdef HAS_CACHE_DATA
+    while (siteNetMap[lookupIndex].name)
+        if (siteNetMap[lookupIndex].net != netId)
+            lookupIndex++;
+        else {
+            if (name == siteNetMap[lookupIndex].name)
+                return;
+printf("[%s:%d] Net name doesn't match! %x = '%s' req '%s'\n", __FUNCTION__, __LINE__, netId, siteNetMap[lookupIndex].name, name.c_str());
+            exit(-1);
+        }
+printf("[%s:%d] Net not found! %x = '%s'\n", __FUNCTION__, __LINE__, netId, name.c_str());
+    exit(-1);
+#endif
+}
+
+std::string lookupSiteNet(int siteNet)
+{
+    char buffer[1000];
+    int lookupIndex = 0;
+
+    sprintf(buffer, "SW_%03x", siteNet);
+#ifdef HAS_CACHE_DATA
+    while (siteNetMap[lookupIndex].name)
+        if (siteNetMap[lookupIndex].sitePin != siteNet)
+            lookupIndex++;
+        else {
+            sprintf(buffer, "%s%s", siteNetMap[lookupIndex].exist ? "" : "*", siteNetMap[lookupIndex].name);
+            break;
+        }
+#endif
+    if (siteNet == 1)
+        return "NONE1"; // VCC
+    if (siteNet == 2)
+        return "NONE2"; // GND
+    if (siteNet == 3)
+        return "NONE3"; // Open
     return buffer;
 }
 
@@ -404,63 +509,96 @@ static struct {
     const char *prev;
     const char *cur;
 } matchTemplate[] = {
-    {"LL_A", "LOGIC_OUTS12:0"}, {"LL_B", "LOGIC_OUTS13:0"}, {"LL_C", "LOGIC_OUTS14:0"}, {"LL_D", "LOGIC_OUTS15:0"},
-    {"LL_AMUX", "LOGIC_OUTS20:0"}, {"LL_BMUX", "LOGIC_OUTS21:0"}, {"LL_CMUX", "LOGIC_OUTS22:0"}, {"LL_DMUX", "LOGIC_OUTS23:0"},
-    {"LL_AQ", "LOGIC_OUTS4:0"}, {"LL_BQ", "LOGIC_OUTS5:0"}, {"LL_CQ", "LOGIC_OUTS6:0"}, {"LL_DQ", "LOGIC_OUTS7:0"},
-    {"L_A", "LOGIC_OUTS8:0"}, {"L_B", "LOGIC_OUTS9:0"}, {"L_D", "LOGIC_OUTS11:0"},
-    {"L_AMUX", "LOGIC_OUTS16:0"}, {"L_BMUX", "LOGIC_OUTS17:0"}, {"L_CMUX", "LOGIC_OUTS18:0"}, {"L_DMUX", "LOGIC_OUTS19:0"},
-    {"L_AQ", "LOGIC_OUTS0:0"}, {"L_BQ", "LOGIC_OUTS1:0"}, {"L_CQ", "LOGIC_OUTS2:0"}, {"L_DQ", "LOGIC_OUTS3:0"},
-    {"M_AQ", "LOGIC_OUTS4:0"}, {"M_BQ", "LOGIC_OUTS5:0"}, {"M_CQ", "LOGIC_OUTS6:0"}, {"M_DQ", "LOGIC_OUTS7:0"},
-    {"M_A", "LOGIC_OUTS12:0"}, {"M_B", "LOGIC_OUTS13:0"}, {"M_C", "LOGIC_OUTS14:0"},
-    {"M_AMUX", "LOGIC_OUTS20:0"}, {"M_BMUX", "LOGIC_OUTS21:0"}, {"M_CMUX", "LOGIC_OUTS22:0"}, {"M_DMUX", "LOGIC_OUTS23:0"},
+    {"L_AQ", "LOGIC_OUTS0"}, {"L_BQ", "LOGIC_OUTS1"}, {"L_CQ", "LOGIC_OUTS2"}, {"L_DQ", "LOGIC_OUTS3"},
+    {"LL_AQ", "LOGIC_OUTS4"}, {"LL_BQ", "LOGIC_OUTS5"}, {"LL_CQ", "LOGIC_OUTS6"}, {"LL_DQ", "LOGIC_OUTS7"},
+    {"M_AQ", "LOGIC_OUTS4"}, {"M_BQ", "LOGIC_OUTS5"}, {"M_CQ", "LOGIC_OUTS6"}, {"M_DQ", "LOGIC_OUTS7"},
+    {"L_A", "LOGIC_OUTS8"}, {"L_B", "LOGIC_OUTS9"}, {"L_C", "LOGIC_OUTS10"}, {"L_D", "LOGIC_OUTS11"},
+    {"M_A", "LOGIC_OUTS12"}, {"M_B", "LOGIC_OUTS13"}, {"M_C", "LOGIC_OUTS14"}, {"M_D", "LOGIC_OUTS15"},
+    {"LL_A", "LOGIC_OUTS12"}, {"LL_B", "LOGIC_OUTS13"}, {"LL_C", "LOGIC_OUTS14"}, {"LL_D", "LOGIC_OUTS15"},
+    {"L_AMUX", "LOGIC_OUTS16"}, {"L_BMUX", "LOGIC_OUTS17"}, {"L_CMUX", "LOGIC_OUTS18"}, {"L_DMUX", "LOGIC_OUTS19"},
+    {"LL_AMUX", "LOGIC_OUTS20"}, {"LL_BMUX", "LOGIC_OUTS21"}, {"LL_CMUX", "LOGIC_OUTS22"}, {"LL_DMUX", "LOGIC_OUTS23"},
+    {"M_AMUX", "LOGIC_OUTS20"}, {"M_BMUX", "LOGIC_OUTS21"}, {"M_CMUX", "LOGIC_OUTS22"}, {"M_DMUX", "LOGIC_OUTS23"},
     {nullptr, nullptr}};
 static struct {
     const char *prefix;
     int deltaX;
     int deltaY;
-} direction[] = {
-    {"EE2BEG", 2, 0}, {"EE4BEG", 4, 0},
-    {"EL1BEG0:c", 1, 0}, {"EL1BEG1:13", 1, 0}, {"EL1BEG2", 1, 0}, {"EL1BEG_N3", 1, -1},
-    {"ER1BEG1", 1, 0}, {"ER1BEG2", 1, 0}, {"ER1BEG3", 1, 0}, {"ER1BEG_S0", 1, 1},
-    //{"NE2BEG0", 1, 0},
-    {"NE2BEG1", 1, 1}, {"NE2BEG2:", 1, 1}, {"NE2BEG3", 1, 1},
-    {"NE6BEG", 2, 4},
-    //{"NL1BEG0", 0, 0},
-    {"NL1BEG1:", 0, 1}, {"NL1BEG2:", 0, 1}, {"NL1BEG3:c", 0, 1},
-    {"NN2BEG0:3", 0, 2}, {"NN2BEG0:7", 0, 2}, {"NN2BEG0:8", 0, 2}, {"NN2BEG0:e", 0, 2},
-    {"NN2BEG1:", 0, 2}, {"NN2BEG2:", 0, 2}, {"NN2BEG3:2", 0, 2},
-    {"NN6BEG0", 0, 5}, {"NN6BEG1", 0, 6}, {"NN6BEG2:6", 0, 6}, {"NN6BEG3", 0, 6},
-    {"NR1BEG0:", 0, 1}, {"NR1BEG1:", 0, 1}, {"NR1BEG2:", 0, 1},
-    {"NR1BEG3:2", 0, 1}, {"NR1BEG3:3", 0, 1},
-    //{"NW2BEG0", -1, 0},
-    {"NW2BEG1", -1, 1}, {"NW2BEG2", -1, 1}, {"NW2BEG3:e", -1, 1},
-    //{"NW6BEG0", -2, 3},
-    {"NW6BEG1", -2, 4}, {"NW6BEG2", -2, 4}, {"NW6BEG3", -2, 4},
-    {"SE2BEG0", 1, -1}, {"SE2BEG1", 1, -1}, {"SE2BEG3", 1, -1},
-    {"SE6BEG0:8", 2, -4}, {"SE6BEG1", 2, -4}, {"SE6BEG2:", 2, -4},
-    {"SL1BEG0:", 0, -1}, {"SL1BEG1:", 0, -1}, {"SL1BEG2:", 0, -1},
-    {"SL1BEG3:4", 0, -1}, {"SL1BEG3:8", 0, -1}, {"SL1BEG3:9", 0, -1}, {"SL1BEG3:e", 0, -1},
-    {"SR1BEG1:", 0, -1}, {"SR1BEG2:", 0, -1},
-    {"SR1BEG3:6", 0, -1}, {"SR1BEG3:a", 0, -1}, {"SR1BEG3:e", 0, -1},
-    {"SS2BEG0:", 0, -2}, {"SS2BEG1:", 0, -2}, {"SS2BEG2:", 0, -2},
-    {"SS2BEG3:2", 0, -2}, {"SS2BEG3:d", 0, -2},
-    {"SS6BEG0:", 0, -6},
-    {"SW6BEG0:8", 2, -4}, {"SW6BEG0:d", -2, -4}, {"SW6BEG2:f", 2, 2},
-    {"SL1BEG3", 0, -1},
-    //{"SR1BEG3", 0, 0},
-    {"SS6BEG1", 0, -6}, {"SS6BEG2", 0, -6}, {"SS6BEG3", 0, -6},
-    {"SW2BEG0", -1, -1}, {"SW2BEG1", -1, -1}, {"SW2BEG2", -1, -1},
-    //{"SW2BEG3", -1, -1},
-    {"SW6BEG1", -2, -4},
-    //{"SW6BEG3", -2, -3},
-    {"WW2BEG0:4", -2, 0},
-    {"WL1BEG0", -1, 0}, {"WL1BEG1", -1, 0}, {"WL1BEG2", -1, 0},
-    //{"WL1BEG_N3", -1, -1},
-    {"WR1BEG1", -1, 0}, {"WR1BEG2", -1, 0}, {"WR1BEG3", -1, 0},
-    //{"WR1BEG_S0", -1, 1},
-    {"WW2BEG", -2, 0},
-    {"WW4BEG0:", -4, -1}, {"WW4BEG2:", -4, 0}, {"WW4BEG1", -4, 0}, {"WW4BEG3", -4, 0},
+    } dirNew[] = {
+    {"EE2",  2,  0}, {"EE4",  4,  0}, {"EL1",  1,  0}, {"ER1",  1,  0},
+    {"WW2", -2,  0}, {"WW4", -4,  0}, {"WL1", -1,  0}, {"WR1", -1,  0},
+    {"NE2",  1,  1}, {"NE6",  2,  4}, {"NN2",  0,  2}, {"NN6",  0,  6}, {"NW2", -1,  1}, {"NW6", -2,  4},
+    {"SE2",  1, -1}, {"SE6",  2, -4}, {"SS2",  0, -2}, {"SS6",  0, -6}, {"SW2", -1, -1}, {"SW6", -2, -4},
+    {"NL1",  0,  1}, {"NR1",  0,  1},
+    {"SL1",  0, -1}, {"SR1",  0, -1},
     {nullptr, 0, 0}};
+
+static struct {
+    const char *cur;
+    const char *prev;
+} prefixPin[] = {
+    {"LL_A1", "IMUX7"}, {"LL_A2", "IMUX2"}, {"LL_A3", "IMUX1"},
+    {"LL_A4", "IMUX11"}, {"LL_A5", "IMUX8"}, {"LL_A6", "IMUX4"},
+    {"LL_AX", "BYP_ALT1"},
+    {"LL_B1", "IMUX15"}, {"LL_B2", "IMUX18"}, {"LL_B3", "IMUX17"},
+    {"LL_B4", "IMUX27"}, {"LL_B5", "IMUX24"}, {"LL_B6", "IMUX12"},
+    {"LL_BX", "BYP_ALT4"},
+    {"LL_C1", "IMUX32"}, {"LL_C2", "IMUX29"}, {"LL_C3", "IMUX22"},
+    {"LL_C4", "IMUX28"}, {"LL_C5", "IMUX31"}, {"LL_C6", "IMUX35"},
+    {"LL_CE", "FAN_ALT7"}, {"LL_CX", "BYP_ALT3"},
+    {"LL_D1", "IMUX40"}, {"LL_D2", "IMUX45"}, {"LL_D3", "IMUX38"},
+    {"LL_D4", "IMUX44"}, {"LL_D5", "IMUX47"}, {"LL_D6", "IMUX43"},
+    {"LL_DX", "BYP_ALT6"},
+    {"L_A1", "IMUX6"}, {"L_A2", "IMUX3"}, {"L_A3", "IMUX0"},
+    {"L_A4", "IMUX10"}, {"L_A5", "IMUX9"}, {"L_A6", "IMUX5"},
+    {"L_AX", "BYP_ALT0"},
+    {"L_B1", "IMUX14"}, {"L_B2", "IMUX19"}, {"L_B3", "IMUX16"},
+    {"L_B4", "IMUX26"}, {"L_B5", "IMUX25"}, {"L_B6", "IMUX13"},
+    {"L_BX", "BYP_ALT5"},
+    {"L_C1", "IMUX33"}, {"L_C2", "IMUX20"}, {"L_C3", "IMUX23"},
+    {"L_C4", "IMUX21"}, {"L_C5", "IMUX30"}, {"L_C6", "IMUX34"},
+    {"L_CE", "FAN_ALT6"},
+    {"L_CX", "BYP_ALT2"},
+    {"L_D1", "IMUX41"}, {"L_D2", "IMUX36"}, {"L_D3", "IMUX39"},
+    {"L_D4", "IMUX37"}, {"L_D5", "IMUX46"}, {"L_D6", "IMUX42"},
+    {"L_DX", "BYP_ALT7"},
+    {"M_A1", "IMUX7"}, {"M_A2", "IMUX2"}, {"M_A3", "IMUX1"},
+    {"M_A4", "IMUX11"}, {"M_A5", "IMUX8"}, {"M_A6", "IMUX4"},
+    {"M_AX", "BYP_ALT1"},
+    {"M_B1", "IMUX15"}, {"M_B2", "IMUX18"}, {"M_B3", "IMUX17"},
+    {"M_B4", "IMUX27"}, {"M_B5", "IMUX24"}, {"M_B6", "IMUX12"},
+    {"M_BX", "BYP_ALT4"},
+    {"M_C1", "IMUX32"}, {"M_C2", "IMUX29"}, {"M_C3", "IMUX22"},
+    {"M_C4", "IMUX28"}, {"M_C5", "IMUX31"}, {"M_C6", "IMUX35"},
+    {"M_CE", "FAN_ALT7"}, {"M_CX", "BYP_ALT3"},
+    {"M_D1", "IMUX40"}, {"M_D2", "IMUX45"}, {"M_D3", "IMUX38"},
+    {"M_D4", "IMUX44"}, {"M_D5", "IMUX47"}, {"M_D6", "IMUX43"},
+    {"M_DX", "BYP_ALT6"},
+    {"L_SR", "CTRL0"}, {"LL_SR", "CTRL1"}, {"M_SR", "CTRL1"},
+    {}};
+
+struct {
+    int value;
+    const char *name;
+} muxName[] = {
+    {0x2, "EE2"}, //{0x2, "ER1"},
+    {0x3, "EL1"}, {0x4, "ER1"},
+    {0x8, "NR1"},
+    {0xb, "NE2"}, //{0xb, "SR1"},
+    {0xc, "NL1"}, {0xd, "NN2"}, {0xe, "NR1"}, {0xf, "NW2"},
+    {0x10, "SE2"}, {0x11, "SL1"}, {0x12, "SR1"}, {0x13, "SS2"}, {0x14, "SW2"},
+    {0x15, "VCC"},
+    {0x16, "WL1"}, {0x17, "WR1"}, {0x18, "WW2"},
+    {-1, nullptr}};
+
+typedef struct {
+    int         tile;
+    int         siteX;
+    int         siteY;
+    int         mux;
+    std::string site;
+    std::string pin;
+} PinInfo;
+
 void readNodeList(bool &first)
 {
     int count = readInteger();
@@ -474,12 +612,13 @@ void readNodeList(bool &first)
         checkId(extra, 0);
         first = false;
     }
-    std::string previousTile, previousPin, forceTile;
+    std::list<PinInfo> pinList;
+    // First, parse file into 'pinList'
     for (int i = 0; i < count; i++) {
         int tile = readInteger();
-        int sitePin = readInteger();
-        int elementPin = sitePin>>16;
-        sitePin &= 0xffff;
+        int mux = readInteger();
+        int elementPin = mux>>16;
+        mux &= 0xffff;
 
         int t1 = (tile >> 29) & 1;
         int t2 = (tile >> 28) & 1;
@@ -488,59 +627,183 @@ void readNodeList(bool &first)
         //tile &= 0x3fffff;
         tile &= 0xffffff;
         std::string tname = coord2Tile[tile];
-        if (tname == "")
-            tname = "tile_" + autostrH(tile);
-        printf(" ");
-        if (forceTile != "") {
-            if (forceTile == tname)
-                previousTile = tname;
-            else if (tname == "INT_L" + forceTile.substr(5) || tname == "INT_R" + forceTile.substr(5)) {
-            }
-            else {
-printf("[%s:%d] prevTile %s cur %s force %s\n", __FUNCTION__, __LINE__, previousTile.c_str(), tname.c_str(), forceTile.c_str());
-exit(-1);
-            }
+        if (tname == "") {
+            printf("[%s:%d]missing tile def %x\n", __FUNCTION__, __LINE__, tile);
+            exit(-1);
         }
-        if (startswith(previousTile, "CLB") && tname == "INT" + previousTile.substr(5))
-            previousTile = tname;
-        if (previousTile != tname)
-            printf("%s/", tname.c_str());
         std::string pname = getPinName(tname, elementPin);
-        if (sitePin != 0xffff)
-            pname += ":" + autostrH(sitePin);
         if (startswith(pname, "CLBLL_") || startswith(pname, "CLBLM_"))
             pname = pname.substr(6);
-        bool skip = false;
+        std::string temp = tname.substr(tname.find("_X")+2);
+        int siteX = atoi(temp.c_str());
+        int siteY = atoi(temp.substr(temp.find("Y")+1).c_str());
+        pinList.push_back(PinInfo{tile, siteX, siteY, mux, tname, pname});
+    }
+
+    // Now, perform processing on the assembled list
+    auto item = pinList.begin(), prevItem = item;
+    if (item->mux != 0xffff) {
+        printf("[%s:%d] default mux only on first element %p mux %x\n", __FUNCTION__, __LINE__, item->pin.c_str(), item->mux);
+        exit(-1);
+    }
+    item++;
+    int matchIndex = 0;
+    // skip printing pins when they automatically follow from previous pin type
+    while(matchTemplate[matchIndex].prev) {
+        if (prevItem->pin == matchTemplate[matchIndex].prev) {
+            if (item->pin == matchTemplate[matchIndex].cur && item->mux == 0) {
+                item = pinList.erase(item);
+                break;
+            }
+            else if ((prevItem->pin == "M_D" && item->pin == "M_DMUX")
+             || (prevItem->pin == "L_C" && item->pin == "L_CMUX")) {
+                // ok
+            }
+            else {
+                printf("[%s:%d] prev %s pname %s\n", __FUNCTION__, __LINE__, prevItem->pin.c_str(), item->pin.c_str());
+                exit(-1);
+            }
+        }
+        matchIndex++;
+    }
+    bool skipFill = false;
+    for (auto item = pinList.begin(), itemE = pinList.end(), prevItem = item; item != itemE;) {
+        if (item != pinList.begin() && item->mux == 0xffff) {
+            printf("[%s:%d] default mux only on first element %p mux %x\n", __FUNCTION__, __LINE__, item->pin.c_str(), item->mux);
+            exit(-1);
+        }
+        if (item != pinList.begin()) {
         int matchIndex = 0;
-        // skip printing pins when they automatically follow from previous pin type
-        while(matchTemplate[matchIndex].prev) {
-            if (previousPin == matchTemplate[matchIndex].prev) {
-                if (pname == matchTemplate[matchIndex].cur)
-                    skip = true;
-                else {
-                    printf("[%s:%d] prev %s pname %s\n", __FUNCTION__, __LINE__, previousPin.c_str(), pname.c_str());
+        // validate that mandatory previous pin matches
+        while(prefixPin[matchIndex].prev) {
+            if (item->pin == prefixPin[matchIndex].cur) {
+                auto pitem = item;
+                pitem--;
+                if (item->mux != 0 || !startswith(pitem->pin, prefixPin[matchIndex].prev)) {
+                    printf("[%s:%d] prefix mux %x prev %s pname %s\n", __FUNCTION__, __LINE__, item->mux, pitem->pin.c_str(), item->pin.c_str());
                     exit(-1);
                 }
+                item->mux = pitem->mux; // copy mux value from prefix
+                pinList.erase(pitem);
+                break;
             }
             matchIndex++;
         }
-        if (!skip)
-            printf("%s", pname.c_str());
+        if (startswith(item->pin, "BYP") && item->pin.length() > 3 && isdigit(item->pin[3])) {
+                auto pitem = item;
+                pitem--;
+            if (!startswith(pitem->pin, "BYP_ALT")) {
+                printf("[%s:%d] bypalt prev %s pname %s\n", __FUNCTION__, __LINE__, pitem->pin.c_str(), item->pin.c_str());
+                exit(-1);
+            }
+            int bval = atoi(item->pin.c_str() + 3);
+            int balt = atoi(pitem->pin.c_str() + 7);
+            if (item->mux != 0 || bval != balt) {
+                printf("[%s:%d] bypaltval prev %s pname %s\n", __FUNCTION__, __LINE__, pitem->pin.c_str(), item->pin.c_str());
+                exit(-1);
+            }
+            item = pinList.erase(item);
+            //skipFill = true;
+            if (0)
+            if (item == pinList.end() || !startswith(item->pin, "BYP_BOUNCE") || item->mux != 0) {
+                printf("[%s:%d] bypbounce prev %s pname %s\n", __FUNCTION__, __LINE__, pitem->pin.c_str(), item->pin.c_str());
+                exit(-1);
+            }
+            goto endl;
+        }
+        if (!skipFill && startswith(prevItem->pin, "FAN_ALT")) {
+            int balt = atoi(prevItem->pin.c_str() + 7);
+            int bval;
+            if (startswith(item->pin, "FAN") && item->pin.length() > 3 && isdigit(item->pin[3])) {
+                bval = atoi(item->pin.c_str() + 3);
+            }
+            else if (startswith(item->pin, "FAN_BOUNCE")) {
+                bval = atoi(item->pin.c_str() + 10);
+            }
+            else {
+                printf("[%s:%d] fanalt prev %s pname %s\n", __FUNCTION__, __LINE__, prevItem->pin.c_str(), item->pin.c_str());
+                exit(-1);
+            }
+            if (item->mux != 0 || bval != balt) {
+                printf("[%s:%d] fanaltval prev %s pname %s\n", __FUNCTION__, __LINE__, prevItem->pin.c_str(), item->pin.c_str());
+                exit(-1);
+            }
+            skipFill = true;
+            item = pinList.erase(item);
+            goto endl;
+        }
+        }
+        prevItem = item;
+        item++;
+        skipFill = false;
+endl:;
+    }
+    for (auto item = pinList.begin(), itemE = pinList.end(), prevItem = item; item != itemE; prevItem = item, item++) {
+        if (prevItem->tile != item->tile) {
+int bind = prevItem->pin.find("BEG");
+if (bind > 0) {
+    std::string fs = coord2Tile[prevItem->tile], cs = coord2Tile[item->tile].c_str();
+    std::string ftemp = fs.substr(fs.find("_X")+2);
+    std::string ctemp = cs.substr(cs.find("_X")+2);
+    int targetX = atoi(ctemp.c_str());
+    int sourceX = atoi(ftemp.c_str());
+    int diffX = targetX - sourceX;
+    int targetY = atoi(ctemp.substr(ctemp.find("Y") + 1).c_str());
+    int sourceY = atoi(ftemp.substr(ftemp.find("Y") + 1).c_str());
+    int diffY = targetY - sourceY;
+    int diffInd = 0;
+    int ldiff = (sourceY & 1) * 2 + (targetY & 1);
+    while (dirNew[diffInd].prefix) {
+        if (!endswith(prevItem->pin, "_N3") && !endswith(prevItem->pin, "_S0"))
+        if (startswith(prevItem->pin, dirNew[diffInd].prefix)) {
+        if (startswith(fs, "INT_") && startswith(cs, "INT_")) {
+int fL = fs[4] == 'L';
+int cL = cs[4] == 'L';
+        if ((dirNew[diffInd].deltaX != diffX && targetX != 0 && (sourceX != 0 || dirNew[diffInd].deltaX >= 0)
+)
+         || dirNew[diffInd].deltaY != diffY)
+            printf("\nZZZ tilediff X:%d Y:%d pin %s ldiff %d odd %d col:%d row:%d %s -> %s\n",
+                diffX - dirNew[diffInd].deltaX, diffY - dirNew[diffInd].deltaY,
+ prevItem->pin.c_str(),
+                fL  * 2 + cL,
+                ldiff,
+                item->tile%128 - prevItem->tile%128, item->tile/128 - prevItem->tile/128,
+                fs.c_str(), cs.c_str());
+        }
+        break;
+        }
+        diffInd++;
+    }
+}
+        }
 
-        previousPin = pname;
-        previousTile = tname;
-        forceTile = "";
-        matchIndex = 0;
-        // skip printing tiles when they automatically follow from previous pin type
-        while(direction[matchIndex].prefix) {
-            if (startswith(previousPin, direction[matchIndex].prefix)) {
-                int ind = previousTile.find("_X") + 2;
-                std::string temp = previousTile.substr(ind);
-                int offX = atoi(temp.c_str())  + direction[matchIndex].deltaX;
-                temp = temp.substr(temp.find("Y") + 1);
-                int offY = atoi(temp.c_str()) + direction[matchIndex].deltaY;
-                if (offX >= 0 && offY >= 0)
-                    forceTile = previousTile.substr(0, ind) + autostr(offX) + "Y" + autostr(offY);
+        printf(" ");
+        if (item->site != "")
+            printf("%s/", item->site.c_str());
+        printf("%s", item->pin.c_str());
+        if (item->mux != 0xffff) {
+            int ind = 0;
+            while(muxName[ind].name) {
+                if (item->mux == muxName[ind].value) {
+                    printf(":%s", muxName[ind].name);
+                    goto muxEnd;
+                }
+                ind++;
+            }
+            if (item->mux < 2)
+                printf(":%x", item->mux);
+            else
+                printf(":MUX_%x", item->mux);
+muxEnd:;
+        }
+        int matchIndex = 0;
+        while(prefixPin[matchIndex].prev) {
+            if (item->pin == prefixPin[matchIndex].cur) {
+                auto pitem = item;
+                pitem++;
+                if (pitem != itemE && pitem->tile != item->tile)
+                    printf("\n");
+                break;
             }
             matchIndex++;
         }
@@ -598,7 +861,7 @@ void belStart(int elementNumber)
 {
     if (!lineValid) {
         lineValid = true;
-        printf("    BEL %s", translateName("Element", elementNumber).c_str());
+        printf("    %s", translateName("Element", elementNumber).c_str());
     }
 }
 
@@ -607,7 +870,7 @@ std::map<std::string, int> site2tile;
 void dumpXdef(void)
 {
 //jca
-initCoord();
+    initCoord();
     printf("Parse header\n");
     checkStr(std::string(bufp, bufp + strlen(header)), header);
     bufp += strlen(header);
@@ -664,8 +927,8 @@ printf("[%s:%d] head5 %d device '%s' package '%s' limit %d str1 '%s': %x %x\n", 
         checkId(messageData[0].val, 0xdead3333);
         checkId(mlen, 4); // site info
         int siteTypeId = messageData[1].val;
-        std::string siteTypeName = messageData[2].str;
-        int sitetypeInfo = messageData[3].val;
+        std::string siteName = messageData[2].str;
+        std::string siteType = translateName("SiteType", messageData[3].val);
         mlen = readMessage();
         checkId(mlen, 1);
         int IOpipType = messageData[0].val;
@@ -677,14 +940,15 @@ printf("[%s:%d] head5 %d device '%s' package '%s' limit %d str1 '%s': %x %x\n", 
         checkId(messageData[0].val, 0xdead4444); // loop for BEL
         mlen = readMessage();
         int belCount = messageData[0].val;
-        printf("sitetype %s id %x", siteTypeName.c_str(), siteTypeId);
-        //setTileMap(siteTypeName, siteTypeId);
-        printf(" tile %s", site2Tile[siteTypeName].c_str());
-        printf(" %s\n", translateName("SiteType", sitetypeInfo).c_str());
+        printf("sitetype %s id %x", siteName.c_str(), siteTypeId);
+        printf(" tile %s", site2Tile[siteName].c_str());
+        printf(" %s\n", siteType.c_str());
         for (int belIndex = 0; belIndex < belCount; belIndex++) {
             mlen = readMessage();
             checkId(mlen, 1);
             int belNumber = messageData[0].val;
+            std::string belType = translateName("Element", belNumber);
+            bool isFF = endswith(belType, "FF");
             mlen = readMessage();
             checkId(mlen, 1);
             int cellCount = messageData[0].val;
@@ -694,7 +958,6 @@ printf("[%s:%d] head5 %d device '%s' package '%s' limit %d str1 '%s': %x %x\n", 
             lineValid = false;
             bool hasCell = false;
             int cell1, cell2, cell3;
-            //belStart(belNumber); // always output
             if (cellCount) {
                 checkId(cellCount, 1);
                 belStart(belNumber);
@@ -707,7 +970,20 @@ printf("[%s:%d] head5 %d device '%s' package '%s' limit %d str1 '%s': %x %x\n", 
                     cell2 = messageData[2].val;
                     cell3 = messageData[3].val;
                     hasCell = true;
-                    printf(" [%x %x %x]", cell1, cell2, cell3);
+                    if (isFF) {
+                        if (cell1 != 1 || cell2 != 0 || cell3 != 0) {
+                            printf("[%s:%d] cellnumber error %x %x %x\n", __FUNCTION__, __LINE__, cell1, cell2, cell3);
+                            exit(-1);
+                        }
+                    }
+                    else if (belType == "BUFBIDI") {
+                        if (cell1 != 0xa || cell2 != 1 || cell3 != 0) {
+                            printf("[%s:%d] cellnumber error %x %x %x\n", __FUNCTION__, __LINE__, cell1, cell2, cell3);
+                            exit(-1);
+                        }
+                    }
+                    else
+                        printf(" [%x %x %x]", cell1, cell2, cell3);
                 }
                 printf("");
             }
@@ -719,7 +995,7 @@ printf("[%s:%d] head5 %d device '%s' package '%s' limit %d str1 '%s': %x %x\n", 
             const char *sep = "";
             if (int nameCount = messageData[0].val) {
                 belStart(belNumber);
-                printf(" pins {");
+                std::string pinStr = " {";
                 bool hasData = false;
                 int save1, save3;
                 int pinWrap = 4;
@@ -730,7 +1006,7 @@ printf("[%s:%d] head5 %d device '%s' package '%s' limit %d str1 '%s': %x %x\n", 
                     mlen = readMessage();
                     checkId(mlen, 1);
                     if (int pinCount = messageData[0].val) {
-                    printf("%s", sep);
+                    pinStr += sep;
                     for (int pinIndex = 0; pinIndex < pinCount; pinIndex++) {
                         readMessage(); // pin info
                         checkId(messageDataIndex, 4);
@@ -741,13 +1017,12 @@ printf("[%s:%d] head5 %d device '%s' package '%s' limit %d str1 '%s': %x %x\n", 
                         int val3 = messageData[3].val;
                         assert(!hasCell || cell1 == val1);
                         if (!hasData || save1 != val1 || save3 != val3) {
-                            printf("[");
+                            pinStr += "[";
                             if (!hasCell)
-                                printf("%x ", val1);
-                            printf("%x] ", val3);
+                                pinStr += autostrH(val1) + " ";
+                            pinStr += autostrH(val3) + "] ";
                         }
-                        printf("%s", messageData[2].str.c_str());
-                        printf(":%s", translateName("ElementPin", pinId).c_str());
+                        pinStr += messageData[2].str + ":" + translateName("ElementPin", pinId);
                         hasData = true;
                         save1 = val1;
                         save3 = val3;
@@ -759,13 +1034,21 @@ printf("[%s:%d] head5 %d device '%s' package '%s' limit %d str1 '%s': %x %x\n", 
                     }
                     }
                 }
-                printf("}");
+                pinStr += "}";
+                if (isFF) {
+                    if (pinStr != " {[0] CE:CE, C:CK, D:D, R:SR, Q:Q}") {
+                        printf("[%s:%d] incorrect pins for FF '%s'\n", __FUNCTION__, __LINE__, pinStr.c_str());
+                        exit(-1);
+                    }
+                    pinStr = "";
+                }
+                printf("%s", pinStr.c_str());
             }
             if (lineValid) {
                 if (lineId == -1)
                     printf("\n");
                 else
-                    printf(" BEL_%03x\n", lineId);
+                    printf(" %s\n", translatePlace(lineId).c_str());
             }
         }
         mlen = readMessage();
@@ -813,10 +1096,15 @@ printf("[%s:%d] head5 %d device '%s' package '%s' limit %d str1 '%s': %x %x\n", 
         checkId(messageData[0].val, 0xdead8888); // net
         mlen = readMessage();
         checkId(mlen, 1);
+        bool isSlice = startswith(siteType, "SLICE");
         if (int netCount = messageData[0].val) {
             const char *sep = "";
-            printf("    SITETYPENET ");
-            int swWrap = 3;
+            printf("    SITE_PINS ");
+            int swWrap = 2;
+            std::list<std::string> pinNames;
+            sitePinCount[siteType]["BASIC"]++;
+            bool hasA6LUT_O6 = false;
+            int countA6LUT_O6 = 0;
             for (int netIndex = 0; netIndex < netCount; netIndex++) {
                 mlen = readMessage();
                 checkId(mlen, 1);
@@ -824,24 +1112,48 @@ printf("[%s:%d] head5 %d device '%s' package '%s' limit %d str1 '%s': %x %x\n", 
                 mlen = readMessage();
                 checkId(mlen, 1);
                 if (int connCount = messageData[0].val) {
-                    printf("%s %s {", sep, translateName("SiteTypeNet", pinNetId).c_str());
-                    const char *sep2 = "";
+                    std::string pinName = translateName("SiteTypeNet", pinNetId);
+                    if (pinName == "A6LUT_O6")
+                        hasA6LUT_O6 = true;
+                    pinNames.push_back(pinName);
+                    std::string sep2 = "{", end = "";
+                    bool isNoneNet = false;
+                    std::string valStr = pinName;
                     for (int connIndex = 0; connIndex < connCount; connIndex++) {
                         mlen = readMessage();
                         checkId(mlen, 1);
                         int val0 = messageData[0].val;
-                        printf("%sSW_%03x", sep2, val0);
+                        std::string netName = lookupSiteNet(val0);
+                        if (startswith(netName, "NONE"))
+                            isNoneNet = true;
+                        if (netName != "NONE3") {
+                        valStr += sep2 + netName;
                         sep2 = ", ";
+                        end = "}";
+                        }
                     }
-                    printf("}");
+                    valStr += end;
+                    countA6LUT_O6 += sitePinMandatory[siteType][pinName].sameA6LUT_O6;
+                    if (isSlice)
+                        sitePinCount[siteType][pinName]++;
+                    if ((!sitePinMandatory[siteType][pinName].mandatory && !sitePinMandatory[siteType][pinName].sameA6LUT_O6) || end != "") {
+                    printf("%s %s", sep, valStr.c_str());
                     sep = ",";
+                    if (!isNoneNet)
                     if (--swWrap == 0) {
                         sep = ",\n        ";
-                        swWrap = 3;
+                        swWrap = 2;
+                    }
                     }
                 }
             }
             printf("\n");
+            if ((!hasA6LUT_O6 && (countA6LUT_O6 != 0)) || (hasA6LUT_O6 && countA6LUT_O6 != sitePinA6LUT_O6[siteType])) {
+                printf("[%s:%d] A6LUT_O6 %d does not predict 'CARRY'/etc %d/%d\n", __FUNCTION__, __LINE__, hasA6LUT_O6, countA6LUT_O6, sitePinA6LUT_O6[siteType]);
+                exit(-1);
+            }
+            if (isSlice && sitePinTemplate[siteType].size() < pinNames.size())
+                sitePinTemplate[siteType] = pinNames;
         }
         mlen = readMessage();
         checkId(mlen, 1);
@@ -905,12 +1217,11 @@ printf("[%s:%d] head5 %d device '%s' package '%s' limit %d str1 '%s': %x %x\n", 
     int vv2 = readInteger();
     int vv3 = readInteger();
     printf("Read nets %d, %d, %d\n", nameCount, vv2, vv3);
-std::map<int, int> netExist;
     for (int nameIndex = 0; nameIndex < nameCount; nameIndex++) {
         std::string netSignalName = readString();
         int netId = readInteger();
         printf("NET_%03x %s: ", netId, netSignalName.c_str());
-        netExist[netId] = 1;
+        checkNetName(netId, netSignalName);
         if (first) {
             int extra = readInteger();
             checkId(extra, 0);
@@ -970,7 +1281,8 @@ std::map<int, int> netExist;
         std::string signalName = messageData[0].str;
         int val1 = messageData[1].val;
         int netId = messageData[2].val;
-        printf("Site2Net %s SW_%03x %sNET_%03x\n", signalName.c_str(), val1, netExist[netId] ? "" : "*", netId);
+        //printf("Site2Net %s SW_%03x NET_%03x\n", signalName.c_str(), val1, netId);
+        siteNet[val1] = SiteNetInfo{netId, signalName};
     };
     mlen = readMessage();
     checkId(mlen, 1);
@@ -982,7 +1294,8 @@ std::map<int, int> netExist;
         mlen = readMessage();
         checkId(mlen, 3);
         // ordinal of signal = messageData[2].val;
-        printf("SignalSource %s BEL_%03x\n", messageData[0].str.c_str(), messageData[1].val);
+        //printf("PlaceName %s BEL_%03x\n", messageData[0].str.c_str(), messageData[1].val);
+        placeName[messageData[1].val] = messageData[0].str;
     };
     printf("Parse device cache\n");
     mlen = readMessage();
@@ -1034,7 +1347,13 @@ next:;
         fprintf(fcache, "const char *lookupMap_%s[] = {\n", citem.first.c_str());
         int offset = 0;
         for (auto item: citem.second) {
-            fprintf(fcache, "    \"%s\",    // %s:%x\n", item.c_str(), citem.first.c_str(), offset);
+            std::string valstr = item;
+            if (citem.first == "INT_L") {
+                int ind = valstr.find("_L");
+                if (ind > 0)
+                    valstr = valstr.substr(0, ind) + valstr.substr(ind+2);
+            }
+            fprintf(fcache, "    \"%s\",    // %s:%x\n", valstr.c_str(), citem.first.c_str(), offset);
             offset++;
         }
         fprintf(fcache, "};\n");
@@ -1043,6 +1362,26 @@ next:;
     for (auto citem: tilePin)
         fprintf(fcache, "    { \"%s\", %ld, lookupMap_%s},\n", citem.first.c_str(), citem.second.size(), citem.first.c_str());
     fprintf(fcache, "    { nullptr, -1, nullptr} };\n");
+    fprintf(fcache, "PlaceInfo placeMap[] = {\n");
+    for (auto citem: placeName)
+        fprintf(fcache, "    { %d, \"%s\"},\n", citem.first, citem.second.c_str());
+    fprintf(fcache, "    { -1, nullptr} };\n");
+    fprintf(fcache, "SiteNetMap siteNetMap[] = {\n");
+    for (auto citem: siteNet)
+        fprintf(fcache, "    { %d, %d, %d, \"%s\"},\n", citem.first, citem.second.net, netExist[citem.second.net], citem.second.name.c_str());
+    fprintf(fcache, "    { 0, 0, 0, nullptr} };\n");
+    for (auto citem: sitePinTemplate) {
+        fprintf(fcache, "SitePinInfo sitePinMap_%s[] = {    \n", citem.first.c_str());
+        for (auto iitem: citem.second)
+            fprintf(fcache, " {\"%s\", %d, %d},", iitem.c_str(),
+               sitePinCount[citem.first]["BASIC"] == sitePinCount[citem.first][iitem],
+               sitePinCount[citem.first]["A6LUT_O6"] == sitePinCount[citem.first][iitem]);
+        fprintf(fcache, " };\n");
+    }
+    fprintf(fcache, "SitePinInfoMap sitePinMap[] = {    \n");
+    for (auto citem: sitePinTemplate)
+        fprintf(fcache, "    {\"%s\", sitePinMap_%s, %ld},\n", citem.first.c_str(), citem.first.c_str(), citem.second.size());
+    fprintf(fcache, "    };\n");
     fclose(fcache);
 }
 
